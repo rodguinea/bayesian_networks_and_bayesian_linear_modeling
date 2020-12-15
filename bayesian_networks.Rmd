@@ -1,0 +1,193 @@
+---
+title: "Bayesian Networks Variable Selection"
+author: "Systems Biology of Aging Group"
+date: "9/13/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+packages <- c("dplyr", "MXM", "ggplot2", "data.table", "ramify", "reticulate", "knitr")
+install.packages(setdiff(packages, rownames(installed.packages())))
+
+library(dplyr)
+library(MXM)
+library(ggplot2)
+library(data.table)
+library(ramify)
+library(reticulate)
+library(knitr)
+knitr::knit_engines$set(python3 = reticulate::eng_python)
+```
+
+```{r}
+Sys.which("python3")
+os = import("os")
+os$listdir(".")
+py_install("lightgbm")
+py_install("pandas")
+```
+
+```{r}
+load("imputed_dataset.RData")
+df_complete <- df_imputed$ximp
+```
+
+```{r}
+df_imputed$OOBerror
+```
+
+```{r}
+run <- c(0:9)
+permut <- rbind(c(4,1,2,3,0),
+                c(0,4,2,3,1),
+                c(0,1,4,3,2),
+                c(0,1,2,4,3),
+                c(0,1,2,3,4))
+
+gbm_scores <- numeric()
+
+buff_run <- list()
+buff_run_pval <- list()
+
+for(i in 1:10){
+  
+  buff_permute <- list()
+  buff_pval <- list()
+  
+  
+ for(j in 1:5){
+    train_partit <- permut[j,1:4]
+    test_partit <- permut[j,5]
+        
+    yText_1 <- paste(run[i],"//lifespan_stage_one_Y_",train_partit[1],".tsv", sep = "")
+    xText_1 <- paste(run[i],"//lifespan_stage_one_X_",train_partit[1],".tsv", sep = "")
+    
+    yText_2 <- paste(run[i],"//lifespan_stage_one_Y_",train_partit[2],".tsv", sep = "")
+    xText_2 <- paste(run[i],"//lifespan_stage_one_X_",train_partit[2],".tsv", sep = "")
+    
+    yText_3 <- paste(run[i],"//lifespan_stage_one_Y_",train_partit[3],".tsv", sep = "")
+    xText_3 <- paste(run[i],"//lifespan_stage_one_X_",train_partit[3],".tsv", sep = "")
+    
+    yText_4 <- paste(run[i],"//lifespan_stage_one_Y_",train_partit[4],".tsv", sep = "")
+    xText_4 <- paste(run[i],"//lifespan_stage_one_X_",train_partit[4],".tsv", sep = "")
+    
+    dfx_train1 <- read.csv(xText_1, sep = "\t", header = TRUE, row.names = 1)
+    dfx_train2 <- read.csv(xText_2, sep = "\t", header = TRUE, row.names = 1)
+    dfx_train3 <- read.csv(xText_3, sep = "\t", header = TRUE, row.names = 1)
+    dfx_train4 <- read.csv(xText_4, sep = "\t", header = TRUE, row.names = 1)
+    
+    dfy_train1 <- read.csv(yText_1, sep = "\t", header = TRUE, row.names = 1)
+    dfy_train2 <- read.csv(yText_2, sep = "\t", header = TRUE, row.names = 1)
+    dfy_train3 <- read.csv(yText_3, sep = "\t", header = TRUE, row.names = 1)
+    dfy_train4 <- read.csv(yText_4, sep = "\t", header = TRUE, row.names = 1)
+    
+    dfx_train <- rbind(dfx_train1, dfx_train2, dfx_train3, dfx_train4)
+    dfy_train <- rbind(dfy_train1, dfy_train2, dfy_train3, dfy_train4)
+    
+    dfx_partition <- subset(df_complete, rownames(df_complete) %in% rownames(dfx_train))
+    imputed_stratified_partition <- merge(dfx_partition, dfy_train, by="row.names", all=TRUE)
+    imputed_stratified_partition <- dplyr::select(imputed_stratified_partition, c(colnames(df_complete),"lifespan"))
+    
+    dfy_text <- paste(run[i],"//lifespan_stage_one_Y_",test_partit,".tsv", sep = "")
+    dfx_text <- paste(run[i],"//lifespan_stage_one_X_",test_partit,".tsv", sep = "")
+    
+    dfy_test <- read.csv(dfy_text, sep = "\t", header = TRUE, row.names = 1)
+    dfx_test <- read.csv(dfx_text, sep = "\t", header = TRUE, row.names = 1)
+    
+    dfxy_test <- subset(df_complete, rownames(df_complete) %in% rownames(dfx_test))
+    dfxy_test <- merge(dfxy_test, dfy_test, by="row.names", all=TRUE)
+    dfxy_test <- dplyr::select(dfxy_test, c(colnames(df_complete),"lifespan"))
+    
+    
+    mod <- SES(imputed_stratified_partition$lifespan,as.matrix(dplyr::select(imputed_stratified_partition, -c("lifespan"))), max_k = 60, threshold = 0.01, 
+           test = "testIndSpearman", wei = NULL, user_test = NULL, hash = FALSE, hashObject = NULL, ncores = 1, backward = TRUE)
+    
+    
+    numSig <- dim(mod@signatures)[1]
+    numGene <- dim(mod@signatures)[2]
+    
+    signature_list <- list()
+    score_vector <- vector()
+    
+    for(u in 1:numSig){
+      gene_signatures <- mod@signatures[u,]
+      gene_signature <- colnames(imputed_stratified_partition)[gene_signatures]
+      signature_list[[u]] <- gene_signature
+    }
+    
+    for(u in 1:numSig){
+      X_train <- dfx_train[,c(signature_list[[u]])]
+      y_train <- dfy_train[,c("lifespan")]
+      
+      
+      X_test <- dfx_test[,c(signature_list[[u]])]
+      y_test <- dfy_test$lifespan
+      
+      source_python('script.py')
+      
+      mod_regression_lightGBM <- regression_model_lightgbm(X_train, y_train, X_test) - y_test
+      
+      RSS <- c(crossprod(mod_regression_lightGBM))
+      MSE <- RSS / length(mod_regression_lightGBM)
+      RMSE <- sqrt(MSE)
+      score_vector <- c(score_vector, RMSE)
+    }
+    
+    best_signature <- which.min(score_vector)
+    gbm_scores <- c(gbm_scores, score_vector[best_signature])
+    
+    buff_permute[[j]] <- signature_list[best_signature][[1]]
+    buff_pval[[j]] <- exp(mod@pvalues)
+ }
+  
+  buff_run[[i]] <- buff_permute
+  buff_run_pval[[i]] <- buff_pval
+  print(i)
+}
+
+```
+
+```{r}
+print(sort(table(unlist(buff_run)))/50)
+```
+
+```{r}
+signatures <- c()
+buff <- unlist(buff_run, recursive = FALSE)
+for(i in 1:50){
+  signatures <- c(signatures, paste(buff[[i]], collapse = ", "))
+}
+sig_df <- data.frame(signatures = signatures, RMSE = gbm_scores)
+sig_df[order(sig_df$RMSE),]
+```
+
+```{r}
+image=ggplot(sig_df, aes(x = RMSE)) +
+        geom_histogram(binwidth = 8/9, color = "grey30", fill = "white") +
+        geom_vline(xintercept = median(sig_df$RMSE), color = "red", linetype = "dashed", size = 2) + xlab("RMSE") + ylab("Gene signatures count") + theme(axis.title.x = element_text(size = 20)) +
+        theme(axis.title.y = element_text(size = 20)) +
+        theme(axis.text.x = element_text(face="bold", color="#993333", size=15), axis.text.y = element_text(face="bold", color="#993333", size=15))
+image
+```
+
+```{r}
+summary(sig_df$RMSE)
+```
+
+```{r}
+median(sig_df$RMSE)
+```
+
+```{r}
+sd(sig_df$RMSE)
+```
+
+```{r}
+signatures[1]
+```
+
+

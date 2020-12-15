@@ -1,0 +1,466 @@
+---
+title: "causal_analysis"
+author: "Rodrigo Guinea"
+date: "9/13/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(MXM)
+#library(mice)
+library(ggplot2)
+library(doParallel)
+library(missForest)
+library(data.table)
+library(foreach)
+library(bestNormalize)
+library(ramify)
+library(permute)
+library(gapminder)
+library(bestNormalize)
+library(tidyverse)
+library(mice)
+library(coda)
+library(rjags)
+library(psych)
+library(entropy)
+library(HDtest)
+library(PerformanceAnalytics)
+
+```
+
+```{r}
+library(MLmetrics)
+```
+
+# Paso 1
+
+```{r}
+df <- read.csv("imputed_dataset_missForest_with_lifespan.csv", header=TRUE, row.names = 1)
+meta_df <- read.csv("samples.csv", header=TRUE, row.names = 1)[1:6]
+dat <- merge(meta_df, df, by="row.names", all=TRUE)
+rownames(dat) <- dat$code
+dat <- dplyr::select(dat, -c("Row.names", "lifespan_2", "code", "order", "species", "family"))
+
+rm(df)
+rm(meta_df)
+```
+
+
+# Paso 4
+
+```{r}
+ground_dat <- dat
+ground_dat$tissue <- as.factor(as.numeric(ground_dat$tissue))
+top_genes <- read.csv("pm.csv", header = TRUE)
+dat <- dplyr::select(dat,c(as.character(top_genes$top)[1:12], "lifespan", "tissue"))
+#dat <- dplyr::select(dat,c("ENSG00000188747", "ENSG00000198663", "ENSG00000115488", "ENSG00000184983", "ENSG00000151962", "ENSG00000171121", "ENSG00000142002", "lifespan", "tissue"))
+#dat_tissue <- dplyr::select(dat,c("tissue"))
+#pairs.panels(dat)
+```
+
+```{r}
+dat
+```
+
+
+# Paso 5
+
+```{r}
+L <- list()
+for(i in 1:(ncol(dat)-1)){
+  L[[i]] <- orderNorm(dat[,i])
+  dat[,i] <- orderNorm(dat[,i])$x.t
+}
+```
+```{r}
+dat
+```
+
+# Paso 6
+
+```{r}
+#dat <- cbind(dat_backup, dat_tissue)
+dat$tissue <- as.numeric(as.factor(dat$tissue))
+dat1 <- dat
+dat
+```
+
+```{r}
+top_genes
+```
+
+
+# Paso 7
+
+```{r}
+dat <- dat1
+
+mod_string <- "model{
+  for(i in 1:length(lifespan)){
+    lifespan[i] ~ dnorm(mu[i], prec)
+     mu[i] <- a0 + NOXA1[tissue[i]] * ENSG00000188747[i] + CEL[tissue[i]]   * ENSG00000170835[i] + CALCOCO2[tissue[i]] * ENSG00000136436[i] + 
+                   C6orf89[tissue[i]] * ENSG00000198663[i] + PPP1CA[tissue[i]]    * ENSG00000172531[i] # + SPATA20[tissue[i]] * ENSG00000006282[i] # +
+                   # DPP9[tissue[i]]  * ENSG00000142002[i] # + DCTD[tissue[i]]  * ENSG00000129187[i] #+ LRR1[tissue[i]]  * ENSG00000165501[i] +
+                   #DNAJC15[tissue[i]] * ENSG00000120675[i] + C1orf56[tissue[i]] * ENSG00000143443[i] # + DTYMK[tissue[i]] * ENSG00000168393[i] + TIMP1[tissue[i]] * ENSG00000168393[i] 
+  }
+  
+  for(j in 1:max(tissue)){
+    NOXA1[j] ~ dnorm(NOXA10, prec_NOXA1)
+    CEL[j] ~ dnorm(CEL0, prec_CEL)
+    CALCOCO2[j] ~ dnorm(CALCOCO20, prec_CALCOCO2)
+    C6orf89[j] ~ dnorm(C6orf890, prec_C6orf89)
+    PPP1CA[j] ~ dnorm(PPP1CA0, prec_PPP1CA)
+#    SPATA20[j] ~ dnorm(SPATA200, prec_SPATA20)
+#    DPP9[j] ~ dnorm(DPP90, prec_DPP9)
+#    DCTD[j] ~ dnorm(DCTD0, prec_DCTD)
+#    LRR1[j] ~ dnorm(LRR10, prec_LRR1)
+#    DNAJC15[j] ~ dnorm(DNAJC150, prec_DNAJC15)
+#    C1orf56[j] ~ dnorm(C1orf560, prec_C1orf56)
+#    DTYMK[j] ~ dnorm(DTYMK0, prec_DTYMK)
+#    TIMP1[j] ~ dnorm(DTYMK0, prec_DTYMK)
+  }
+  
+  a0 ~ dnorm(0.0, 1.0/1.0e6)
+  
+  NOXA10 ~ dnorm(0.0, 1.0/1.0e6)
+  prec_NOXA1 ~ dgamma(1/2.0, 1*10.0/2.0)
+  tau_NOXA1 = sqrt( 1.0 / prec_NOXA1 )
+  
+  CEL0 ~ dnorm(0.0, 1.0/1.0e6)
+  prec_CEL ~ dgamma(1/2.0, 1*10.0/2.0)
+  tau_CEL = sqrt( 1.0 / prec_CEL )
+
+  CALCOCO20 ~ dnorm(0.0, 1.0/1.0e6)
+  prec_CALCOCO2 ~ dgamma(1/2.0, 1*10.0/2.0)
+  tau_CALCOCO2 = sqrt( 1.0 / prec_CALCOCO2 )
+  
+  C6orf890 ~ dnorm(0.0, 1.0/1.0e6)
+  prec_C6orf89 ~ dgamma(1/2.0, 1*10.0/2.0)
+  tau_C6orf89 = sqrt( 1.0 / prec_C6orf89 )
+
+  PPP1CA0 ~ dnorm(0.0, 1.0/1.0e6)
+  prec_PPP1CA ~ dgamma(1/2.0, 1*10.0/2.0)
+  tau_PPP1CA = sqrt( 1.0 / prec_PPP1CA )
+  
+#  SPATA200 ~ dnorm(0.0, 1.0/1.0e6)
+#  prec_SPATA20 ~ dgamma(1/2.0, 1*10.0/2.0)
+#  tau_SPATA20 = sqrt( 1.0 / prec_SPATA20 )
+
+#  DPP90 ~ dnorm(0.0, 1.0/1.0e6)
+#  prec_DPP9 ~ dgamma(1/2.0, 1*10.0/2.0)
+#  tau_DPP9 = sqrt( 1.0 / prec_DPP9 )
+
+#  DCTD0 ~ dnorm(0.0, 1.0/1.0e6)
+#  prec_DCTD ~ dgamma(1/2.0, 1*10.0/2.0)
+#  tau_DCTD = sqrt( 1.0 / prec_DCTD )
+  
+  #LRR10 ~ dnorm(0.0, 1.0/1.0e6)
+  #prec_LRR1 ~ dgamma(1/2.0, 1*10.0/2.0)
+  #tau_LRR1 = sqrt( 1.0 / prec_LRR1 )
+
+  #DNAJC150 ~ dnorm(0.0, 1.0/1.0e6)
+  #prec_DNAJC15 ~ dgamma(1/2.0, 1*10.0/2.0)
+  #tau_DNAJC15 = sqrt( 1.0 / prec_DNAJC15 )
+  
+  #C1orf560 ~ dnorm(0.0, 1.0/1.0e6)
+  #prec_C1orf56 ~ dgamma(1/2.0, 1*10.0/2.0)
+  #tau_C1orf56 = sqrt( 1.0 / prec_C1orf56 )
+
+#  DTYMK0 ~ dnorm(0.0, 1.0/1.0e6)
+#  prec_DTYMK ~ dgamma(1/2.0, 1*10.0/2.0)
+#  tau_DTYMK = sqrt( 1.0 / prec_DTYMK )
+  
+#  TIMP10 ~ dnorm(0.0, 1.0/1.0e6)
+#  prec_TIMP1 ~ dgamma(1/2.0, 1*10.0/2.0)
+#  tau_TIMP1 = sqrt( 1.0 / prec_TIMP1 )
+  
+  prec ~ dgamma(5/2.0, 5*10.0/2.0)
+  sig = sqrt( 1.0 / prec )
+}"
+
+data_jags <- as.list(dat)
+params <- c("a0", "sig", "NOXA1", "CEL", "CALCOCO2", "C6orf89", "PPP1CA")
+mod <- jags.model(textConnection(mod_string), data = data_jags, n.chains = 3)
+update(mod, 1e3)
+
+mod_sim = coda.samples(model=mod, variable.names = params, n.iter = 20e3)
+mod_csim = as.mcmc(do.call(rbind, mod_sim))
+```
+, "SPATA20", "DPP9", "DCTD", "LRR1", "DNAJC15", "C1orf56"
+
+5 genes
+```{r}
+dic.samples(mod, n.iter = 2e4)
+```
+
+6 genes
+```{r}
+dic.samples(mod, n.iter = 2e4)
+```
+
+7 genes
+```{r}
+dic.samples(mod, n.iter = 2e4)
+```
+
+8 genes
+```{r}
+dic.samples(mod, n.iter = 2e4)
+```
+
+9 genes
+```{r}
+dic.samples(mod, n.iter = 1e4)
+```
+
+10 genes
+```{r}
+dic.samples(mod, n.iter = 1e4)
+```
+
+
+11 genes
+```{r}
+dic.samples(mod, n.iter = 2e4)
+```
+
+12 genes
+```{r}
+dic.samples(mod, n.iter = 1e4)
+```
+
+13 genes
+```{r}
+dic.samples(mod, n.iter = 1e4)
+```
+
+
+```{r}
+plot(mod_sim)
+```
+
+```{r}
+summary(mod_csim)
+```
+
+```{r}
+mean(mod_csim[,"LRR1[1]"]>0) || mean(mod_csim[,"LRR1[1]"]<0)
+```
+
+```{r}
+lgenes <- c("C1orf56", "LRR1", "C6orf89", "CALCOCO2", "CEL", "DCTD", "DNAJC15", "NOXA1", "PPP1CA", "SPATA20", "DPP9")
+```
+
+
+
+```{r}
+tissue <- 5
+gene <- lgenes[11]
+
+instance <- paste(gene,"[", tissue, "]", sep = "")
+
+
+mean(mod_csim[,instance]>0)
+mean(mod_csim[,instance]<0)
+gene
+```
+
+
+
+
+
+```{r}
+plot(density(mod_csim[,"LRR1[5]"]))
+```
+
+
+```{r}
+top_genes
+```
+
+```{r}
+head(daf)
+```
+
+```{r include=FALSE}
+gtruth <- ground_dat
+n_sim <- 20e3
+
+tis <- 5
+
+buffer <- data.frame(y_real = numeric(), y_pred = numeric())
+
+dat <- tibble::rownames_to_column(dat)
+daf <- dplyr::filter(dat, tissue == tis)
+daf <- tibble::column_to_rownames(daf)
+dat <- tibble::column_to_rownames(dat)
+
+gtruth <- tibble::rownames_to_column(gtruth)
+gtruth <- dplyr::filter(gtruth, tissue == tis)
+gtruth <- tibble::column_to_rownames(gtruth)
+
+for(i in 1:nrow(daf)){
+  mu <- mod_csim[,"a0"] + mod_csim[,paste("NOXA1[",tis,"]", sep = "")]*daf[i,1] + mod_csim[,paste("CEL[",tis,"]", sep = "")]*daf[i,2] + 
+                          mod_csim[,paste("CALCOCO2[",tis,"]", sep = "")]*daf[i,3] + mod_csim[,paste("C6orf89[",tis,"]", sep = "")]*daf[i,4] + 
+                          mod_csim[,paste("PPP1CA[",tis,"]", sep = "")]*daf[i,5] + mod_csim[,paste("SPATA20[",tis,"]", sep = "")]*daf[i,6] +
+                          mod_csim[,paste("DPP9[",tis,"]", sep = "")]*daf[i,7] + mod_csim[,paste("DCTD[",tis,"]", sep = "")]*daf[i,8] +
+                          mod_csim[,paste("LRR1[",tis,"]", sep = "")]*daf[i,9] + mod_csim[,paste("DNAJC15[",tis,"]", sep = "")]*daf[i,10] + mod_csim[,paste("C1orf56[",tis,"]", sep = "")]*daf[i,11] 
+  
+  y_pred_norm <- rnorm(n_sim, mu, mod_csim[,"sig"])
+  y_pred <- predict(L[[ncol(dat)-1]], y_pred_norm, inverse = TRUE)
+  
+  buffer <- rbind(buffer, data.frame(y_real = gtruth$lifespan[i], y_pred = mean(y_pred)))
+}
+
+```
+
+```{r}
+library(caret)
+postResample(buffer$y_pred,buffer$y_real)
+```
+
+
+```{r}
+print(cor(buffer$y_real, buffer$y_pred, method = "pearson")^2)
+```
+
+```{r}
+plot(buffer$y_real-buffer$y_pred, ylab="Residuals")
+```
+
+```{r}
+plot(buffer$y_pred, buffer$y_real-buffer$y_pred, ylab="Residuals", xlab = "Predictions")
+```
+
+
+```{r}
+ra1 <- buffer$y_real
+pa1 <- buffer$y_pred
+```
+
+```{r}
+ra2 <- buffer$y_real
+pa2 <- buffer$y_pred
+```
+
+```{r}
+ra3 <- buffer$y_real
+pa3 <- buffer$y_pred
+```
+
+```{r}
+ra4 <- buffer$y_real
+pa4 <- buffer$y_pred
+```
+
+```{r}
+ra5 <- buffer$y_real
+pa5 <- buffer$y_pred
+```
+
+```{r}
+ra6 <- buffer$y_real
+pa6 <- buffer$y_pred
+```
+
+
+```{r}
+ddd <- data.frame(real_age = c(ra1,ra2,ra3,ra4,ra5,ra6), predicted_age = c(pa1,pa2,pa3,pa4,pa5,pa6), Tissue = c(rep("Brain",length(ra1)),
+                                                                                                                rep("Heart",length(ra2)),
+                                                                                                                rep("Kidney",length(ra3)),
+                                                                                                                rep("Liver",length(ra4)),
+                                                                                                                rep("Lung",length(ra5)),
+                                                                                                                rep("All Tissues",length(ra6))))
+ddd
+```
+
+
+```{r}
+ggplot(ddd, aes(real_age, predicted_age)) +
+  geom_point() +
+  facet_wrap( ~ Tissue) + geom_abline(intercept = 0) + xlab("Actual age") + ylab("Predicted age") + 
+                                                                            theme(axis.title.x = element_text(size = 20)) +
+                                                                            theme(axis.title.y = element_text(size = 20))
+```
+
+```{r}
+ggplot(ddd, aes(predicted_age, predicted_age - real_age)) +
+  geom_point() +
+  facet_wrap( ~ Tissue) + geom_hline(yintercept = 0) + xlab("Predicted age") + ylab("Residuals") + 
+                                                                            theme(axis.title.x = element_text(size = 20)) +
+                                                                            theme(axis.title.y = element_text(size = 20))
+```
+
+
+
+
+
+```{r}
+par(mfrow = c(3,2))
+
+par(pty="s")
+plot(ra1,pa1, xlim = c(0,130), ylim = c(0,120), xlab="Actual age", ylab="Predicted age", main = "Brain tissue")
+abline(0, 1)
+
+par(pty="s")
+plot(ra2,pa2, xlim = c(0,130), ylim = c(0,120), xlab="Actual age", ylab="Predicted age", main = "Heart tissue")
+abline(0, 1)
+
+par(pty="s")
+plot(ra3,pa3, xlim = c(0,130), ylim = c(0,120), xlab="Actual age", ylab="Predicted age", main = "Kidney tissue")
+abline(0, 1)
+
+par(pty="s")
+plot(ra4,pa4, xlim = c(0,130), ylim = c(0,120), xlab="Actual age", ylab="Predicted age", main = "Liver tissue")
+abline(0, 1)
+
+par(pty="s")
+plot(ra5,pa5, xlim = c(0,130), ylim = c(0,120), xlab="Actual age", ylab="Predicted age", main = "Lung tissue")
+abline(0, 1)
+
+par(pty="s")
+plot(ra6,pa6, xlim = c(0,130), ylim = c(0,120), xlab="Actual age", ylab="Predicted age", main = "All tissues")
+abline(0, 1)
+
+```
+
+
+```{r}
+
+
+p1
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
