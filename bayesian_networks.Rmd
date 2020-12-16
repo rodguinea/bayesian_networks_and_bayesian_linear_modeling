@@ -186,8 +186,3 @@ median(sig_df$RMSE)
 sd(sig_df$RMSE)
 ```
 
-```{r}
-signatures[1]
-```
-
-
